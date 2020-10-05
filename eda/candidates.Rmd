@@ -1,0 +1,353 @@
+---
+title: "candidates"
+author: "Galileu Kim"
+date: "7/3/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, cache = T)
+
+pacman::p_load(
+  c(
+    "tidyverse",
+    "data.table",
+    "R.utils",
+    "RColorBrewer",
+    "GGally",
+    "here"
+  ),
+  require,
+  character.only = T
+)
+
+set.seed(1789)
+
+# read-in
+candidate <- list.files(
+  here("data/wrangle/"),
+  "^candidate.*\\.csv\\.gz",
+  full.names = T
+) %>% 
+  fread(encoding = "UTF-8")
+
+# add age and local/federal election
+candidate <- candidate %>% 
+  mutate(
+    age = election_year - as.numeric(birthyear),
+    local = if_else(
+      election_year %in% seq(2000, 2016, 4),
+      1, 0
+    )
+  )
+```
+
+Let us now understand who runs for office in Brazil. What is the age at which candidates first run for office, whether it is predominantly at the local or federal level, and how they get promoted over time.
+
+```{r}
+# age
+# local level
+candidate %>% 
+  sample_frac(
+    0.25
+  ) %>% 
+  filter(
+    age < 100 &
+      position %in% c(
+        "prefeito", 
+        "vereador"
+      )
+  ) %>% 
+  ggplot() +
+  geom_density(
+    aes(
+      x = age,
+      group = position,
+      fill = position,
+      color = position
+      ),
+    alpha = 0.35
+  ) +
+  theme_minimal()
+
+# state level
+candidate %>% 
+  sample_frac(
+    0.25
+  ) %>% 
+  filter(
+    age < 100 &
+      position %in% c(
+        "governador",
+        "deputado estadual",
+        "senador"
+      )
+  ) %>% 
+  ggplot() +
+  geom_density(
+    aes(
+      x = age,
+      group = position,
+      fill = position,
+      color = position
+      ),
+    alpha = 0.35
+  ) +
+  theme_minimal()
+```
+
+In terms of age, there is not necessarily anything interesting. It is clear that the vereadores and deputados estaduais are in general younger than the older positions, and the distribution is normal, with a mean at 50 for state and slightly lower for local level candidates.
+
+```{r}
+# educational background
+# local
+candidate %>% 
+  filter(
+    local == 1 &
+      position %in% c(
+        "prefeito", "vereador"
+      )
+  ) %>% 
+  count(
+    election_year,
+    position,
+    edu
+  ) %>% 
+  group_by(
+    election_year,
+    position
+  ) %>% 
+  mutate(
+    total = sum(n),
+    n = n/total,
+    edu = as.character(edu)
+  ) %>% 
+  ggplot() +
+  geom_area(
+    aes(
+      x = election_year,
+      y = n,
+      fill = edu
+    ),
+    position = position_stack(reverse = T)
+  ) +
+  scale_fill_brewer(
+    palette = "RdYlBu",
+    breaks = c(
+      as.character(seq(2, 8, 2))
+    ),
+    labels = c(
+      "literate",
+      "lower school",
+      "middle school",
+      "higher education"
+    ),
+    guide = guide_legend(reverse=TRUE),
+    direction = 1
+  ) +
+  facet_grid(position ~ .) +
+  theme_minimal()
+
+# federal
+candidate %>% 
+  filter(
+    local != 1 &
+      position %in% c(
+         "deputado estadual", 
+         "governador", 
+         "senador", 
+         "deputado federal"
+      )
+  ) %>% 
+  count(
+    election_year,
+    position,
+    edu
+  ) %>% 
+  group_by(
+    election_year,
+    position
+  ) %>% 
+  mutate(
+    total = sum(n),
+    n = n/total,
+    edu = as.character(edu)
+  ) %>% 
+  ggplot() +
+  geom_area(
+    aes(
+      x = election_year,
+      y = n,
+      fill = edu
+    ),
+    position = position_stack(reverse = T)
+  ) +
+  scale_fill_brewer(
+    palette = "RdYlBu",
+    breaks = c(
+      as.character(seq(2, 8, 2))
+    ),
+    labels = c(
+      "literate",
+      "lower school",
+      "middle school",
+      "higher education"
+    ),
+    guide = guide_legend(reverse=TRUE),
+    direction = 1
+  ) +
+  facet_grid(position ~ .) +
+  theme_minimal()
+```
+
+There seems to be an overall improvement in the level of education of local politicians. It is worthwhile to note, however, that around 75% of the local politicians have at most middle school completed. This is in stark contrast to federal elections, where most political candidates have at least completed higher education. A clear separation in "quality" between the two.
+
+It is also important to note that the educational background between majoritarian and proportional elections candidates is quite distinct. It is so in a particular sense: mayors and governors tend to be far more educated than their legislative counterparts. As a leadership position, it would be not surprising that some higher prerequiresite for educational background exist, but they are quite
+
+# Career concerns:
+
+I want to understand better who actually becomes a politician. What are the sorts of career trajectories that can be considered "typical"? Is it usually the case that politicians have held a public office before?
+
+```{r}
+# local elections
+candidate %>% 
+  filter(
+    occupation_code != -1 & 
+      occupation_code != 999 &
+      local == 1
+  ) %>% 
+  count(
+    occupation,
+    sort = T
+  ) %>% 
+  mutate(
+    n = prop.table(n) * 100
+  ) %>% 
+  slice(1:20) %>% 
+  ggplot() +
+  geom_point(
+    aes(
+      x = reorder(occupation, n),
+      y = n
+    ),
+    col = "steelblue"
+  ) +
+  coord_flip() +
+  theme_minimal()
+
+# federal elections
+candidate %>% 
+  filter(
+    occupation_code != -1 & 
+      occupation_code != 999 &
+      local == 0
+  ) %>% 
+  count(
+    occupation,
+    sort = T
+  ) %>% 
+  mutate(
+    n = prop.table(n) * 100
+  ) %>% 
+  slice(1:20) %>% 
+  ggplot() +
+  geom_point(
+    aes(
+      x = reorder(occupation, n),
+      y = n
+    ),
+    col = "steelblue"
+  ) +
+  coord_flip() +
+  theme_minimal()
+```
+
+How fascinating. It seems that the background of politicians varies dramatically across different levels. While at the federal and state level we see a predominance of lawyers and businessmen, at the local level we see farmers, business-owners, municipal civil servants. There are also quite a few housewives, which is interesting!
+
+However, I think that the most important finding is that there is a large chunk of local politicians who start their career as municipal servants, far more than what I would have expected. This implies that a career in the public sector is valuable not only because it provides some income, but it also opens the possibility of running for an elected office. This is not necessarily surprising, but curious nonetheless.
+
+Let's take a closer look. Where do vereadores and mayors come from?
+
+```{r}
+# proportion of occupation: mayors
+candidate %>% 
+  filter(
+    position_code == 11 &
+      occupation != "#ne#" &
+      occupation != "outros"
+  ) %>% 
+  count(
+    occupation,
+    sort = T
+  ) %>% 
+  mutate(
+    prop = prop.table(n) * 100
+  ) %>% 
+  arrange(
+    desc(prop)
+  ) %>% 
+  slice(1:20) %>% 
+  ggplot() +
+  geom_point(
+    aes(
+      x = reorder(occupation, prop),
+      y = prop
+    ),
+    col = "steelblue"
+  ) +
+  coord_flip() +
+  theme_minimal()
+
+# vereador
+candidate %>% 
+  filter(
+    position_code == 13 &
+      occupation != "#ne#" &
+      occupation != "outros"
+  ) %>% 
+  count(
+    occupation,
+    sort = T
+  ) %>% 
+  mutate(
+    prop = prop.table(n) * 100
+  ) %>% 
+  arrange(
+    desc(prop)
+  ) %>% 
+  slice(1:20) %>% 
+  ggplot() +
+  geom_point(
+    aes(
+      x = reorder(occupation, prop),
+      y = prop
+    ),
+    col = "steelblue"
+  ) +
+  coord_flip() +
+  theme_minimal()
+
+# filter former municipal workers
+candidate %>% 
+  group_by(position) %>% 
+  summarise(
+    prop = sum(occupation_code == 298 & str_detect(outcome, "^eleito"))/
+      sum(str_detect(outcome, "^eleito")) * 100
+  ) %>% 
+  arrange(
+    desc(prop)
+  ) %>% 
+  slice(1:10) %>% 
+  ggplot() +
+  geom_point(
+    aes(
+      x = reorder(position, prop),
+      y = prop
+    ),
+    col = "steelblue"
+  ) +
+  coord_flip() +
+  theme_minimal()
+```
+
+A few remarks. It is clear that in terms of former occupations, those for mayor and vereador are quite distinct. Those who run for a mayor office are in general either businessmen, doctors, lawyers, and of course, former mayors running for reelection. As for the vereadores, it is surprising to see such a large proportion of farmers running for office. It is also important to note that a large proportion of vereadores who were former public servants. Teachers are not doing poorly either.

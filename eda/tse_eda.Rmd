@@ -1,0 +1,672 @@
+---
+title: "tse_eda"
+author: "Galileu Kim"
+date: "May 14, 2018"
+output: html_document
+---
+Let's start taking a look at the coalitions formed in Brazil. Focus on the local level.
+
+```{r setup, include = F}
+# setup
+knitr::opts_chunk$set(
+	echo = FALSE,
+	message = FALSE,
+	warning = FALSE,
+	cache = T
+)
+
+knitr::opts_knit$set(root.dir = "~/princeton/R/tse")
+
+lapply(
+  c(
+    "tidyverse",
+    "data.table",
+    "R.utils",
+    "stringi",
+    "GGally"
+  ),
+  require, character.only = T
+)
+
+# read-in 
+# elections
+election <- list.files(
+  "./data/wrangle/",
+  full.names = T,
+  pattern = "^election.csv.gz$"
+) %>%
+  gunzip(
+    temporary = T,
+    remove = F,
+    overwrite = T
+  ) %>%
+  fread(encoding = "UTF-8") %>% 
+  filter(
+    year %in% seq(2000, 2016, 4)
+  )
+
+# filter local
+election_mayor <- election %>%
+  filter(position == "prefeito" & year > 1996)
+
+# number of coalition members
+election_mayor <- election_mayor %>%
+  mutate(
+    coalition_members = str_split(
+      coalition,
+      pattern = "/"
+    ),
+    coalition_size = sapply(
+      coalition_members,
+      length
+    )
+  )
+
+# candidates
+candidate <- list.files(
+  "./data/wrangle/",
+  pattern = "^candidate",
+  full.names = T
+) %>% 
+  gunzip(
+    temporary = T,
+    remove = F,
+    overwrite = T
+  ) %>% 
+  fread(encoding = "UTF-8")
+
+# remove supplementary elections
+# focus on post-1996 candidates
+candidate <- candidate %>% 
+  filter(
+    year > 1996 & position_code != 91
+  )
+
+# merge candidate and election
+# filter only "deferido" to avoid duplication
+election_local <- candidate %>%
+  filter(
+    candidate_status == "deferido" & position == "prefeito"
+  ) %>% 
+  transmute(
+    year,
+    cod_tse = as.integer(cod_tse),
+    election_type,
+    candidate_num,
+    round,
+    cpf,
+    occupation,
+    birthyear,
+    edu,
+    edu_desc,
+    mun_birth_code,
+    campaign
+  ) %>% 
+  left_join(
+    election_mayor %>% 
+      filter(
+        candidate_status == "deferido"
+      ) %>% 
+      select(
+        -cpf,
+        -edu,
+        -edu_desc,
+        -mun_birth_code,
+        -campaign,
+        -occupation,
+        -birthyear
+      ),
+    .,
+    by = c(
+      "year", 
+      "cod_tse", 
+      "election_type", 
+      "candidate_num",
+      "round"
+    )
+  )
+
+# distribution of expenses
+# number of parties and fix campaign expenditure
+election_local <- election_local %>% 
+  mutate(
+    coalition_members = str_split(
+      coalition,
+      pattern = "/"
+    ),
+    coalition_size = sapply(
+      coalition_members,
+      length
+    )
+  )
+
+# subset to candidates elect(ed) mayor
+candidate_mayor <- candidate %>% 
+  filter(
+    position == "prefeito"| position_previous == 11
+  )
+  
+candidate_mayor <- candidate_mayor %>% 
+  group_by(
+    candidate_id
+  ) %>% 
+  mutate(
+    coalition_members = str_split(
+      coalition,
+      pattern = "/"
+    ),
+    coalition_size = sapply(
+      coalition_members,
+      length
+    ),
+    coalition_size_previous = lag(coalition_size),
+    reelect_mayor = if_else(
+      position_code == 11 & 
+        position_previous == 11 &
+        outcome_previous == "eleito",
+      1, 0
+    ),
+    promotion = if_else(
+      position_code > lead(position_code),
+      1, 0
+    )
+  ) %>% 
+  ungroup()
+
+# extract governor party
+governor <- candidate %>% 
+  filter(
+    position_code == 3 &
+      outcome == "eleito"
+  ) %>% 
+  select(
+    year, 
+    party_governor = party, 
+    state
+  ) %>% 
+  mutate(
+    year = year - 2
+  )
+
+# join governor party
+candidate_mayor <- candidate_mayor %>% 
+  left_join(
+    governor,
+    by = c(
+      "year", "state"
+    )
+  )
+
+# governor alignment
+candidate_mayor <- candidate_mayor %>% 
+  mutate(
+    governor_alignment = if_else(
+      party_governor == party,
+      1, 0
+    )
+  )
+```
+
+# Number of mayor candidates per election:
+```{r}
+# plot number of candidates
+election_mayor %>%
+  count(year) %>%
+  ggplot() +
+  geom_point(
+    aes(x = year, y = n),
+    size = 1.5
+  ) +
+  theme_minimal()
+```
+
+There are on average 3 candidates per municipality. Let's visualize the distribution of the size of coalitions.
+
+```{r}
+# plot coalitions
+election_mayor %>%
+  count(
+    year,
+    coalition_size
+  ) %>% 
+  ggplot() +
+  geom_bar(
+    aes(
+      x = coalition_size,
+      y = n
+    ),
+    stat = "identity",
+    col = "steelblue3",
+    fill = "steelblue3"
+  ) +
+  facet_grid(
+    year ~ .,
+  ) +
+  theme_minimal() +
+  ggtitle("Histogram of coalition size: historical evolution")
+```
+
+The size of coalition seems to be increasing over time, an interesting development. Let's test the idea proposed in Melo and Soares (2016). Do coalitions really have a better chance of winning an election?
+
+# Winning coalitions:
+
+```{r}
+election_mayor %>% 
+  group_by(coalition_size) %>% 
+  summarise(
+    prob_win = mean(
+      outcome == "eleito"
+    ),
+    size = n()
+  ) %>% 
+  ggplot() +
+  geom_point(
+    aes(
+      x = coalition_size,
+      y = prob_win, 
+      size = size
+    ),
+    col = "steelblue3",
+    alpha = 0.8
+  ) +
+  theme_minimal() +
+  ggtitle("Probability of electoral victory by coalition size")
+```
+
+They clearly do help in winning the elections. In particular, when they cross the 8 party threshold, we observe a spike in the probability of winning. Not sure why. Also need to look at the kinds of resources (campaign) they bring to the table (and join on other datasets).
+
+# What are the central parties?
+
+Let's do a simple exercise. Count the number of occurrences by party in a coalition.
+
+```{r, fig.width = 10, fig.height = 10}
+election_mayor %>% 
+  filter(coalition != "") %>% 
+  group_by(year) %>% 
+  mutate(
+    total_year = n()
+  ) %>% 
+  ungroup %>% 
+  group_by(year, party) %>% 
+  summarize(
+    coalition_prop = n()/mean(total_year)*100
+  ) %>% 
+  ungroup %>% 
+  ggplot(
+    aes(
+      x = reorder(party, -coalition_prop),
+      y = coalition_prop
+    )
+  ) +
+  geom_bar(
+    stat = "identity"
+  ) +
+  facet_grid(
+    year ~ .
+  ) +
+  theme_minimal()
+```
+
+Clearly, the PMDB is the leader in terms of coalition. For some strange reason the reordering variable is not working perfectly, but it does its job. The runner-ups are PSDB, PFL and PT trailing far behind. *Look into network packages*.
+
+# Candidates and campaigns:
+
+It should not be surprising that coalitions are better able to provide mayor candidates with money. Let's check this hypothesis.
+
+```{r}
+# plot expenses
+election_local %>% 
+  group_by(coalition_size) %>% 
+  mutate(
+    campaign = ifelse(
+      campaign == -1,
+      NA,
+      campaign
+    )
+  ) %>% 
+  summarize(
+    campaign = mean(campaign, na.rm = T)
+  ) %>% 
+  ggplot() +
+  geom_point(
+    aes(
+      x = as.factor(coalition_size),
+      y = campaign
+    )
+  ) +
+  theme_minimal()
+```
+
+There seems to be some evidence that campaign expenditures are increasing with the size of the coalition. There seems to be, however, some strange outliers. Could be explained by a large proportion of missing values. Let's check.
+
+```{r}
+# proportion of missingness campaign
+election_local %>% 
+  mutate(
+    campaign_missing = ifelse(
+      campaign == -1,
+      1, 0
+    )
+  ) %>% 
+  group_by(
+    year
+  ) %>% 
+  summarize(
+    prop = mean(
+      campaign_missing
+    )
+  ) %>% 
+  ggplot() +
+  geom_col(
+    aes(
+      x = factor(year),
+      y = prop
+    )
+  ) +
+  theme_minimal()
+```
+
+It is clear that there are missing values, especially for the years of 2000 and 2008. I wonder why that is the case. I cannot use this campaign data as is. I have to look into the **bens de candidatos** dataset later.
+
+# Mayor characteristics:
+
+Let's check the educational background of mayors. I suspect there is wide heterogeneity here, as contrasted with Dal Bo et al. (2017) study on Swedish politicians.
+
+```{r}
+# first check values
+election_local %>% 
+  distinct(
+    edu,
+    edu_desc
+  ) %>% 
+  distinct(
+    edu,
+    .keep_all = T
+  ) %>% 
+  arrange(
+    edu
+  )
+
+# plot
+election_local %>% 
+  ggplot() +
+  stat_count(
+    aes(x = edu, y = ..prop..)
+  ) +
+  theme_minimal() +
+  facet_grid(year ~ .)
+```
+
+The majority of mayors seem to be educated (higher education complete = 8). However, there are still quite a large proportion of mayors who have at most completed high school. I suspect that they will mostly be located in the Northeast and Northern regions.
+
+# Hierarchical mobility:
+
+In Ferraz and Finan (2010), the hypothesis that mayors move across positions is basically discarded, with the authors pointing out that around 10% of mayors moved across positions. Let's check this with our expanded dataset.
+
+```{r eval=FALSE, include=FALSE}
+# first check unique identifiers
+# identify duplicates
+duplicate <- candidate %>%
+  filter(
+    cpf!= "#nulo#" & 
+      candidate_status == "deferido" &
+      !str_detect(
+        election_type, 
+        pattern = "sup|maj|nova"
+      ) &
+      str_detect(
+        election_type, 
+        pattern = "^eleic"
+      )
+  ) %>% 
+  group_by(
+    cpf,
+    elec_title,
+    candidate_name,
+    mun_birth_name,
+    birthyear
+  ) %>%
+  mutate(
+    n = n()
+  ) %>%
+  filter(
+    n > 1
+  )
+
+# how many are missing?
+candidate %>% 
+  filter(
+    cpf == "#nulo#"
+  ) %>% 
+  count(year)
+```
+
+What are the positions available?
+
+```{r}
+candidate %>% 
+  distinct(
+    position_code,
+    .keep_all = T
+  ) %>%
+  select(
+    position_code,
+    position
+  ) %>% 
+  arrange(position_code)
+```
+
+Let's see, first, how many politicians run for multiple offices. If most are one-shots, the question becomes uninteresting. Let's take a closer look.
+
+```{r}
+# how many offices held?
+candidate %>%
+  group_by(candidate_id) %>% 
+  ggplot() +
+  stat_count(
+    aes(x = position_time, y = ..prop..)
+  ) +
+  theme_minimal()
+```
+
+Interesting. It seems like roughly half of politicians are one-shots. This leaves us with another half who run for offices several times. Let's isolate mayors for now.
+
+```{r}
+# how many mayors?
+candidate_mayor %>% 
+  distinct(
+    candidate_id
+  ) %>% 
+  nrow()
+
+# how many survive past one office?
+candidate_mayor %>% 
+  ggplot() +
+  stat_count(
+    aes(x = position_time, y = ..prop..)
+  ) +
+  scale_x_continuous(
+    breaks = seq(1, 11, 1)
+  ) +
+  theme_minimal()
+```
+
+There are roughly 58 thousand unique individuals who have been elected as mayors at least once. Many of them try their luck in other positions! Very interesting. Let's see how many run for re-election.
+
+```{r}
+candidate_mayor %>% 
+  summarize(
+    reelect = sum(
+      reelect_mayor
+    ),
+    previous_mayor = sum(
+      position_code == 11 &
+        outcome == "eleito"
+    )
+  ) %>% 
+  mutate(
+    percent = reelect/previous_mayor
+  )
+```
+
+Around 11 thousand mayors run for re-election, a significant chunk of those individuals who have held a mayoral office (roughly 40%). Does the size of coalition affect probability of a re-election? What about the probability of promotion?
+
+```{r}
+# does coalition size matter for re-election?
+fit_coalition <- list()
+
+fit_coalition$reelection <- glm(
+  reelect_mayor ~ coalition_size_previous + edu + gender,
+  data = candidate_mayor,
+  family = binomial()
+)
+
+fit_coalition$promotion <- glm(
+  promotion ~ coalition_size_previous + edu + gender + campaign,
+  data = candidate_mayor,
+  family = binomial()
+)
+
+fit_coalition %>% 
+  map(
+    summary
+  )
+
+fit_coalition %>% 
+  map(
+    function(x){
+      ggcoef(
+        x, 
+        exclude_intercept = T
+      ) +
+      theme_minimal()
+    }
+  )
+```
+
+The results of these simple models provide some evidence that the size of the coalition improves the chances of re-election and promotion. These are all confounded, certainly, but there is something to be explored there for sure.
+
+# Idea: hierarchical overlap?
+
+What if it is not the size of the coalition, but whether or not you formed the "right" kinds of alliances in lower tiers of government so as to ensure a position higher up? I would imagine that if a mayor formed coalition with the coalitions that are ruling the state, there is a higher probability of promotion.
+
+```{r}
+# test alignment
+fit_coalition$alignment <- glm(
+  promotion ~ as.factor(governor_alignment),
+  data = candidate_mayor,
+  family = binomial()
+)
+
+fit_coalition$alignment %>% 
+  summary
+```
+
+Strangely, there does not seem to be much evidence supporting this claim. I wonder why. Let's check this for reelecting candidates.
+
+```{r}
+glm(
+  reelect_mayor ~ as.factor(governor_alignment),
+  data = candidate_mayor %>% 
+    filter(
+      position_previous == 11 & 
+        outcome_previous == "eleito"
+    ),
+  family = binomial()
+) %>% 
+  summary()
+```
+
+There is some evidence that being aligned with the governor favors the chance of re-election. But still I am interested in the idea of a promotion.
+
+```{r}
+# look at those who are lameducks
+candidate_mayor %>% 
+  group_by(
+    candidate_id
+  ) %>% 
+  mutate(
+    position_future = lead(position_code, order_by = year),
+    promotion = if_else(
+      position_future < position_code,
+      1, 0
+    ) %>% 
+      if_else(
+        is.na(.),
+        0, .
+      ),
+    age = year - as.integer(birthyear)
+  ) %>% 
+  filter(
+      position_code == 11 & outcome == "eleito" & 
+        position_previous == 11 & outcome_previous == "eleito"
+    ) %>%
+  lm(
+    promotion ~ governor_alignment + edu + age + gender + coalition_size + as.factor(party),
+    data = .
+  ) %>% 
+  summary()
+```
+
+No evidence.
+
+# Former mayor?
+
+There are around 57 thousand politicians who run for mayor. Does becoming a mayor help start a political career?
+
+```{r}
+# how many unique politicians?
+candidate_mayor %>% 
+  distinct(
+    candidate_id
+  ) %>% 
+  glimpse
+
+# does becoming a mayor help building a career?
+candidate_mayor %>% 
+  lm(
+    position_time ~ reelect_mayor,
+    data = .
+  ) %>% 
+  summary()
+
+```
+
+It seems to be the case. Of course the $R^2$ is quite low. Maybe we can visualize this better?
+
+```{r}
+candidate_mayor %>% 
+  mutate(
+    reelect_mayor = if_else(
+      reelect_mayor == 1,
+      "reelected", "non-reelected"
+    )
+  ) %>% 
+  group_by(
+    reelect_mayor
+  ) %>%
+  mutate(
+    n = n()
+  ) %>% 
+  group_by(
+    reelect_mayor,
+    position_time
+  ) %>% 
+  summarize(
+    positions = n(),
+    total = mean(n),
+    n = positions/total
+  ) %>% 
+  ggplot() +
+  geom_point(
+    aes(
+      x = position_time,
+      y = n,
+      col = as.factor(reelect_mayor)
+    ),
+    size = 3
+  ) +
+  theme_minimal()
+```
+
+This is OK, and could be explored further. I am just not sure how to take it further: need to take it to Matías. Let's move on to my original idea about coalitions and patronage.
